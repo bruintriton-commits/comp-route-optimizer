@@ -106,7 +106,10 @@
   <!-- STEP 3: editable addresses -->
   <div class="card">
     <label>Stops — one address per line (edit to fix OCR misreads)</label>
-    <textarea id="stops" placeholder="Addresses appear here after OCR. You can also paste or type them."></textarea>
+    <div class="ac-wrap">
+      <textarea id="stops" placeholder="Addresses appear here after OCR. You can also paste or type them."></textarea>
+      <div id="acStops" class="ac-list"></div>
+    </div>
     <div class="hint">Tip: include city for best geocoding (e.g. &ldquo;25140 Wolf Rd, Murrieta&rdquo;). CA is assumed if no state given.</div>
   </div>
 
@@ -157,55 +160,72 @@ $("#useGps").addEventListener("click", () => {
     { enableHighAccuracy: true, timeout: 10000 }
   );
 });
-/* ---------------- Address autocomplete (subject field) ---------------- */
-// Type-ahead via Esri's keyless "suggest" endpoint (same provider the geocoder uses),
+/* ---------------- Address autocomplete (Esri keyless "suggest") ---------------- */
+// Type-ahead on the subject + stops fields via the same provider the geocoder uses,
 // biased to the SoCal territory so local addresses rank first. Tap/click to fill.
 const ESRI_SUGGEST = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/suggest";
 const SUGGEST_BIAS = "-117.3,33.9"; // lng,lat — Inland Empire-ish center
-let acItems = [], acActive = -1, acTimer = null;
-
-function hideSuggest() { acItems = []; acActive = -1; const l = $("#acList"); l.classList.remove("show"); l.innerHTML = ""; }
-function renderSuggest(items) {
-  acItems = items; acActive = -1;
-  const l = $("#acList");
-  if (!items.length) return hideSuggest();
-  l.innerHTML = items.map((t, i) => `<div class="ac-item" data-i="${i}">${escapeHtml(t)}</div>`).join("");
-  l.classList.add("show");
-}
 async function fetchSuggest(q) {
   const u = `${ESRI_SUGGEST}?f=json&maxSuggestions=6&category=Address&countryCode=USA&location=${SUGGEST_BIAS}&text=${encodeURIComponent(q)}`;
   try { const r = await fetch(u); const j = await r.json(); return (j.suggestions || []).map(s => s.text); }
   catch (_) { return []; }
 }
+// Wire type-ahead onto an input/textarea. getQuery() -> string to search ("" skips);
+// onPick(text) -> apply the chosen suggestion.
+function autocomplete(el, list, getQuery, onPick) {
+  let items = [], active = -1, timer = null;
+  const hide = () => { items = []; active = -1; list.classList.remove("show"); list.innerHTML = ""; };
+  const paint = () => [...list.children].forEach((c, i) => c.classList.toggle("active", i === active));
+  el.addEventListener("input", () => {
+    const q = getQuery();
+    clearTimeout(timer);
+    if (q.length < 4) return hide();
+    timer = setTimeout(async () => {
+      const r = await fetchSuggest(q);
+      if (getQuery() !== q) return;                  // ignore stale responses
+      items = r; active = -1;
+      if (!r.length) return hide();
+      list.innerHTML = r.map((t, i) => `<div class="ac-item" data-i="${i}">${escapeHtml(t)}</div>`).join("");
+      list.classList.add("show");
+    }, 250);
+  });
+  list.addEventListener("mousedown", e => {          // mousedown fires before the field's blur
+    const it = e.target.closest(".ac-item"); if (!it) return;
+    e.preventDefault(); onPick(items[+it.dataset.i]); hide();
+  });
+  el.addEventListener("keydown", e => {
+    if (!list.classList.contains("show")) return;
+    if (e.key === "ArrowDown") active = Math.min(active + 1, items.length - 1);
+    else if (e.key === "ArrowUp") active = Math.max(active - 1, 0);
+    else if (e.key === "Enter" && active >= 0) { onPick(items[active]); hide(); e.preventDefault(); return; }
+    else if (e.key === "Escape") return hide();
+    else return;
+    e.preventDefault(); paint();
+  });
+  el.addEventListener("blur", () => setTimeout(hide, 150));
+}
 
-$("#subject").addEventListener("input", () => {
-  const raw = $("#subject").value, v = raw.trim();
-  if (!raw.startsWith("📍")) gpsStart = null;          // typing replaces a GPS pick
-  clearTimeout(acTimer);
-  if (v.length < 4 || raw.startsWith("📍")) return hideSuggest();
-  acTimer = setTimeout(async () => {
-    const items = await fetchSuggest(v);
-    if ($("#subject").value.trim() === v) renderSuggest(items);   // ignore stale responses
-  }, 250);
-});
-// mousedown (not click) so the pick lands before the input's blur hides the list
-$("#acList").addEventListener("mousedown", e => {
-  const it = e.target.closest(".ac-item"); if (!it) return;
-  e.preventDefault();
-  $("#subject").value = acItems[+it.dataset.i];
-  gpsStart = null; hideSuggest();
-});
-$("#subject").addEventListener("keydown", e => {
-  if (!$("#acList").classList.contains("show")) return;
-  if (e.key === "ArrowDown") acActive = Math.min(acActive + 1, acItems.length - 1);
-  else if (e.key === "ArrowUp") acActive = Math.max(acActive - 1, 0);
-  else if (e.key === "Enter" && acActive >= 0) { $("#subject").value = acItems[acActive]; gpsStart = null; hideSuggest(); e.preventDefault(); return; }
-  else if (e.key === "Escape") return hideSuggest();
-  else return;
-  e.preventDefault();
-  [...$("#acList").children].forEach((c, i) => c.classList.toggle("active", i === acActive));
-});
-$("#subject").addEventListener("blur", () => setTimeout(hideSuggest, 150));
+// Subject: search the whole value; a pick replaces it. (Skip while it holds a 📍 GPS pick.)
+$("#subject").addEventListener("input", () => { if (!$("#subject").value.startsWith("📍")) gpsStart = null; });
+autocomplete($("#subject"), $("#acList"),
+  () => $("#subject").value.startsWith("📍") ? "" : $("#subject").value.trim(),
+  text => { $("#subject").value = text; gpsStart = null; });
+
+// Stops: one address per line — search/replace only the line the caret sits on.
+function stopsLine() {
+  const ta = $("#stops"), val = ta.value, pos = ta.selectionStart;
+  const start = val.lastIndexOf("\n", pos - 1) + 1;
+  let end = val.indexOf("\n", pos); if (end === -1) end = val.length;
+  return { start, end, text: val.slice(start, end) };
+}
+autocomplete($("#stops"), $("#acStops"),
+  () => stopsLine().text.trim(),
+  text => {
+    const ta = $("#stops"), { start, end } = stopsLine();
+    ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
+    const caret = start + text.length;
+    ta.setSelectionRange(caret, caret); ta.focus();
+  });
 
 /* ---------------- OCR ---------------- */
 // Upscale + grayscale + contrast-stretch so Tesseract sees larger, cleaner text.
