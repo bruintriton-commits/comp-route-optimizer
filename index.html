@@ -126,6 +126,11 @@ const $ = s => document.querySelector(s);
 const OSRM = "https://router.project-osrm.org/trip/v1/driving/";
 const DEFAULT_REGION = "CA"; // Southern California territory
 
+// Paste your deployed Cloudflare Worker URL here to turn on Claude vision extraction
+// (reliable on photos of screens/printouts). Leave "" to keep on-device OCR only
+// (native TextDetector -> Tesseract). See worker.js for the backend + setup steps.
+const WORKER_URL = "https://comp-vision.signumvaluation.workers.dev";
+
 let gpsStart = null; // {lat,lng} if user picked GPS
 
 /* ---------------- GPS ---------------- */
@@ -199,20 +204,66 @@ async function detectNative(file) {
   return rows.map(r => r.items.sort((a,b)=>a.x-b.x).map(i=>i.s).join(" ")).join("\n");
 }
 
+// Claude vision extraction via the Cloudflare Worker. Most reliable on photos of
+// screens/printouts, where on-device OCR struggles. Returns newline-joined addresses,
+// or "" on any failure so the caller cleanly falls back to native/Tesseract OCR.
+async function callVision(file) {
+  if (!WORKER_URL) return "";
+  try {
+    const { data, media_type } = await prepareForVision(file);
+    const r = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: data, media_type }),
+    });
+    if (!r.ok) return "";
+    const j = await r.json();
+    return (Array.isArray(j.addresses) ? j.addresses : []).join("\n");
+  } catch (_) { return ""; }
+}
+
+// Downscale to a 2576px long edge (Claude's high-resolution input ceiling) and
+// re-encode as JPEG: keeps the upload under the API's per-image size limit, sends
+// only the resolution the model can use, and uploads faster on mobile. No upscaling
+// (it adds no detail). Unlike preprocess(), no grayscale/contrast — vision wants the
+// original color image; that was a Tesseract crutch.
+async function prepareForVision(file) {
+  let img;
+  try { img = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+  catch (_) { img = await createImageBitmap(file); }
+  const cap = 2576;
+  const long = Math.max(img.width, img.height);
+  const scale = long > cap ? cap / long : 1;
+  const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  return { data: dataUrl.split(",")[1], media_type: "image/jpeg" };
+}
+
 $("#photo").addEventListener("change", async e => {
   const file = e.target.files[0];
   if (!file) return;
   const bar = $("#ocrBar"); bar.style.display = "block"; bar.firstElementChild.style.width = "0%";
   try {
     let text = "", engine = "";
-    // 1) Try native on-device recognition first (best on photos, no download).
-    if ("TextDetector" in window) {
+    // 1) Claude vision first (most reliable on photos) — only if a Worker URL is set.
+    if (WORKER_URL) {
+      $("#ocrStatus").textContent = "Reading with Claude vision…";
+      bar.firstElementChild.style.width = "30%";
+      text = await callVision(file);            // "" on failure -> falls through
+      if (text.trim()) engine = "Claude vision";
+      bar.firstElementChild.style.width = "100%";
+    }
+    // 2) Native on-device recognition (Shape Detection API) — no download, good on photos.
+    if (!text.trim() && "TextDetector" in window) {
       $("#ocrStatus").textContent = "Reading with your phone's text recognition…";
       bar.firstElementChild.style.width = "45%";
       try { text = await detectNative(file); if (text.trim()) engine = "phone OCR"; } catch (_) {}
       bar.firstElementChild.style.width = "100%";
     }
-    // 2) Fall back to Tesseract (with preprocessing) if native is absent or empty.
+    // 3) Fall back to Tesseract (with preprocessing) if the above are absent or empty.
     if (!text.trim()) {
       $("#ocrStatus").textContent = "Enhancing image…";
       const canvas = await preprocess(file);
