@@ -153,29 +153,37 @@ $("#photo").addEventListener("change", async e => {
     });
     const found = parseAddresses(data.text);
     const existing = $("#stops").value.trim();
-    $("#stops").value = (existing ? existing + "\n" : "") + found.join("\n");
-    $("#ocrStatus").innerHTML = found.length
-      ? `<span class="ok">Found ${found.length} candidate address${found.length>1?"es":""} — review & edit above.</span>`
-      : `<span class="warnc">No clear addresses detected. Type or paste them above.</span>`;
+    if (found.length) {
+      $("#stops").value = (existing ? existing + "\n" : "") + found.join("\n");
+      $("#ocrStatus").innerHTML = `<span class="ok">Found ${found.length} address${found.length>1?"es":""} — review & edit above.</span>`;
+    } else {
+      // Fallback: dump the raw scan so the user can prune it, never leave them empty.
+      const raw = data.text.split(/\n+/).map(l => l.replace(/\s+/g," ").trim()).filter(l => l.length > 3).join("\n");
+      $("#stops").value = (existing ? existing + "\n" : "") + raw;
+      $("#ocrStatus").innerHTML = `<span class="warnc">Couldn't auto-pick addresses — dropped the raw scan above. Delete the non-address lines and keep the stops.</span>`;
+    }
   } catch (err) {
     $("#ocrStatus").innerHTML = `<span class="errc">OCR failed: ${err.message}. Type addresses manually.</span>`;
   } finally { bar.style.display = "none"; }
 });
 
-// Heuristic: lines that start with a street number and have a street-ish word.
+// Pull address lines out of OCR text. Anchor on ZIP first (most reliable),
+// then fall back to city-comma or street suffix. Handles suffix-less and
+// Spanish street names (Avenida, Via, Calle, El/La, Camino, Paseo...).
 function parseAddresses(text) {
-  const suffix = /\b(st|street|ave|avenue|rd|road|dr|drive|ln|lane|ct|court|cir|circle|way|pl|place|blvd|trl|trail|ter|terrace|pkwy|parkway|hwy|loop|run|row|path|pass|glen|cove|bend|crest|ridge|vista|mesa|canyon|creek)\b/i;
+  const suffix = /\b(st|street|ave|avenue|rd|road|dr|drive|ln|lane|ct|court|cir|circle|way|pl|place|blvd|trl|trail|ter|terrace|pkwy|parkway|hwy|loop|run|row|path|pass|glen|cove|bend|crest|ridge|vista|mesa|canyon|creek|via|avenida|calle|camino|paseo|plaza|corte|rancho)\b/i;
+  const zip = /\b\d{5}\b/;
+  const startsNum = /^#?\d{1,6}[A-Za-z]?\s+\S/;  // house number, optional leading #
   const out = [];
   for (let raw of text.split(/\n+/)) {
-    let line = raw.replace(/\s+/g, " ").trim();
-    if (line.length < 6) continue;
-    // must begin with a house number (1–6 digits, optional letter)
-    if (!/^\d{1,6}[A-Za-z]?\s+\S/.test(line)) continue;
-    if (!suffix.test(line)) continue;
-    // strip trailing junk after a zip or state if present, keep through zip
-    out.push(line);
+    let line = raw.replace(/\s+/g, " ").replace(/^[^\dA-Za-z#]+/, "").trim();
+    if (line.length < 5) continue;
+    if (!startsNum.test(line)) continue;                 // must start with a house number
+    if (!(zip.test(line) || suffix.test(line) || /,\s*[A-Za-z]/.test(line))) continue;
+    // keep everything through the ZIP if there is one (drops trailing column junk)
+    const m = line.match(/^(.*?\b\d{5})(?:-\d{4})?\b/);
+    out.push(m ? m[1].trim() : line);
   }
-  // de-dupe
   return [...new Set(out)];
 }
 
