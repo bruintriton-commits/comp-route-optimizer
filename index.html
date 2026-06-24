@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#1f6f43" />
+<title>Comp Route Optimizer</title>
+<style>
+  :root {
+    --green: #1f6f43;
+    --green-d: #155232;
+    --lime: #55ff7f;
+    --bg: #0f1411;
+    --card: #182019;
+    --line: #2a352c;
+    --text: #e7efe9;
+    --muted: #93a399;
+    --warn: #f0b429;
+    --err: #e5534b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 16px 16px 96px; }
+  h1 { font-size: 1.25rem; margin: 4px 0 2px; }
+  .sub { color: var(--muted); font-size: .85rem; margin: 0 0 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px; margin: 0 0 14px; }
+  label { display: block; font-size: .8rem; color: var(--muted); margin: 0 0 6px;
+    text-transform: uppercase; letter-spacing: .04em; }
+  input[type=text], textarea {
+    width: 100%; background: #0e120f; color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px; font-size: 16px; font-family: inherit; }
+  textarea { min-height: 132px; resize: vertical; line-height: 1.5; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button {
+    appearance: none; border: 0; border-radius: 10px; padding: 13px 14px; font-size: 1rem;
+    font-weight: 600; color: #fff; background: var(--green); cursor: pointer; }
+  button:active { transform: translateY(1px); }
+  button.secondary { background: #232d25; color: var(--text); border: 1px solid var(--line); }
+  button.ghost { background: transparent; color: var(--lime); font-weight: 600; padding: 8px; }
+  button:disabled { opacity: .5; }
+  button.big { width: 100%; padding: 16px; font-size: 1.1rem; margin-top: 4px; }
+  .hint { font-size: .78rem; color: var(--muted); margin: 8px 2px 0; }
+  .file-btn { display:block; width:100%; text-align:center; background:#232d25;
+    border:1px dashed var(--line); color: var(--text); border-radius:10px; padding:18px;
+    font-weight:600; }
+  input[type=file] { display: none; }
+  #status { font-size: .85rem; min-height: 1.2em; margin: 6px 2px; }
+  .ok { color: var(--lime); } .warnc { color: var(--warn); } .errc { color: var(--err); }
+  .bar { height: 6px; background:#0e120f; border-radius: 6px; overflow:hidden; margin: 8px 0; display:none; }
+  .bar > i { display:block; height:100%; width:0; background: var(--lime); transition: width .2s; }
+  ol.result { list-style: none; counter-reset: stop; padding: 0; margin: 6px 0 0; }
+  ol.result li { counter-increment: stop; display:flex; gap:10px; align-items:flex-start;
+    padding: 10px 0; border-bottom: 1px solid var(--line); }
+  ol.result li::before { content: counter(stop); flex: 0 0 26px; height:26px; border-radius:50%;
+    background: var(--green); color:#fff; font-size:.85rem; font-weight:700; display:flex;
+    align-items:center; justify-content:center; margin-top:1px; }
+  ol.result li.subj::before { content: "S"; background: var(--lime); color:#0f1411; }
+  ol.result li .addr { flex:1; }
+  ol.result li .flag { font-size:.72rem; color: var(--warn); display:block; }
+  .stats { display:flex; gap:14px; margin: 10px 0 2px; font-size:.9rem; }
+  .stats b { color: var(--lime); }
+  .maps { display:block; text-align:center; background:#1a73e8; }
+  a.maps { text-decoration:none; }
+  .muted-sm { color: var(--muted); font-size:.75rem; }
+  footer { text-align:center; color:var(--muted); font-size:.72rem; margin-top:20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Comp Route Optimizer</h1>
+  <p class="sub">Photo &rarr; addresses &rarr; real-road optimized route &rarr; Google Maps</p>
+
+  <!-- STEP 1: start point -->
+  <div class="card">
+    <label>Subject / starting point</label>
+    <input id="subject" type="text" placeholder="e.g. 27639 Paper Bark Ave, Murrieta, CA 92562" autocomplete="off" />
+    <button class="ghost" id="useGps" style="margin-top:8px;">📍 Use my current location instead</button>
+    <div class="hint">This stays locked as stop&nbsp;1. The route ends wherever is fastest (no forced return trip).</div>
+  </div>
+
+  <!-- STEP 2: image -> OCR -->
+  <div class="card">
+    <label>Comp sheet photo</label>
+    <label class="file-btn" for="photo">📷 Take photo / choose image</label>
+    <input id="photo" type="file" accept="image/*" capture="environment" />
+    <div class="bar" id="ocrBar"><i></i></div>
+    <div id="ocrStatus" class="muted-sm" style="margin-top:6px;"></div>
+  </div>
+
+  <!-- STEP 3: editable addresses -->
+  <div class="card">
+    <label>Stops — one address per line (edit to fix OCR misreads)</label>
+    <textarea id="stops" placeholder="Addresses appear here after OCR. You can also paste or type them."></textarea>
+    <div class="hint">Tip: include city for best geocoding (e.g. &ldquo;25140 Wolf Rd, Murrieta&rdquo;). CA is assumed if no state given.</div>
+  </div>
+
+  <!-- STEP 4: optimize -->
+  <button class="big" id="go">Optimize route</button>
+  <div class="bar" id="goBar"><i></i></div>
+  <div id="status"></div>
+
+  <!-- RESULT -->
+  <div class="card" id="resultCard" style="display:none;">
+    <div class="stats">
+      <span>Drive time: <b id="rTime">–</b></span>
+      <span>Distance: <b id="rMiles">–</b></span>
+    </div>
+    <ol class="result" id="resultList"></ol>
+    <a class="maps" id="mapsLink" target="_blank" rel="noopener"><button class="big maps">🗺️ Open in Google Maps</button></a>
+    <div class="muted-sm" id="mapsNote" style="margin-top:8px;"></div>
+  </div>
+
+  <footer>
+    Geocoding: Nominatim → Census → Esri · Optimization: OSRM <code>/trip</code> (real road durations)<br/>
+    No account, no key — runs entirely on your device.
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const OSRM = "https://router.project-osrm.org/trip/v1/driving/";
+const DEFAULT_REGION = "CA"; // Southern California territory
+
+let gpsStart = null; // {lat,lng} if user picked GPS
+
+/* ---------------- GPS ---------------- */
+$("#useGps").addEventListener("click", () => {
+  if (!navigator.geolocation) return setStatus("Geolocation not available.", "errc");
+  setStatus("Getting location…");
+  navigator.geolocation.getCurrentPosition(
+    p => { gpsStart = { lat: p.coords.latitude, lng: p.coords.longitude };
+           $("#subject").value = `📍 Current location (${gpsStart.lat.toFixed(4)}, ${gpsStart.lng.toFixed(4)})`;
+           setStatus("Using current location as start.", "ok"); },
+    () => setStatus("Couldn't get location — type the subject address instead.", "errc"),
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+});
+$("#subject").addEventListener("input", () => { if (!$("#subject").value.startsWith("📍")) gpsStart = null; });
+
+/* ---------------- OCR ---------------- */
+$("#photo").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const bar = $("#ocrBar"); bar.style.display = "block"; bar.firstElementChild.style.width = "0%";
+  $("#ocrStatus").textContent = "Reading image… (first run downloads the OCR engine, ~10s)";
+  try {
+    const { data } = await Tesseract.recognize(file, "eng", {
+      logger: m => { if (m.status === "recognizing text") bar.firstElementChild.style.width = Math.round(m.progress*100)+"%"; }
+    });
+    const found = parseAddresses(data.text);
+    const existing = $("#stops").value.trim();
+    $("#stops").value = (existing ? existing + "\n" : "") + found.join("\n");
+    $("#ocrStatus").innerHTML = found.length
+      ? `<span class="ok">Found ${found.length} candidate address${found.length>1?"es":""} — review & edit above.</span>`
+      : `<span class="warnc">No clear addresses detected. Type or paste them above.</span>`;
+  } catch (err) {
+    $("#ocrStatus").innerHTML = `<span class="errc">OCR failed: ${err.message}. Type addresses manually.</span>`;
+  } finally { bar.style.display = "none"; }
+});
+
+// Heuristic: lines that start with a street number and have a street-ish word.
+function parseAddresses(text) {
+  const suffix = /\b(st|street|ave|avenue|rd|road|dr|drive|ln|lane|ct|court|cir|circle|way|pl|place|blvd|trl|trail|ter|terrace|pkwy|parkway|hwy|loop|run|row|path|pass|glen|cove|bend|crest|ridge|vista|mesa|canyon|creek)\b/i;
+  const out = [];
+  for (let raw of text.split(/\n+/)) {
+    let line = raw.replace(/\s+/g, " ").trim();
+    if (line.length < 6) continue;
+    // must begin with a house number (1–6 digits, optional letter)
+    if (!/^\d{1,6}[A-Za-z]?\s+\S/.test(line)) continue;
+    if (!suffix.test(line)) continue;
+    // strip trailing junk after a zip or state if present, keep through zip
+    out.push(line);
+  }
+  // de-dupe
+  return [...new Set(out)];
+}
+
+/* ---------------- Geocoding cascade ---------------- */
+function normAddr(a) {
+  a = a.trim().replace(/\s+/g, " ");
+  if (!/\b[A-Z]{2}\b/i.test(a) && !/\bCalifornia\b/i.test(a)) a += `, ${DEFAULT_REGION}`;
+  return a;
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function geocode(addr) {
+  const q = normAddr(addr);
+  // 1) Nominatim (throttled by caller to 1/sec)
+  try {
+    const u = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=${encodeURIComponent(q)}`;
+    const r = await fetch(u, { headers: { "Accept": "application/json" } });
+    const j = await r.json();
+    if (j[0]) return { lat: +j[0].lat, lng: +j[0].lon, src: "OSM" };
+  } catch (_) {}
+  // 2) US Census
+  try {
+    const u = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(q)}&benchmark=Public_AR_Current&format=json`;
+    const r = await fetch(u);
+    const j = await r.json();
+    const m = j.result?.addressMatches?.[0];
+    if (m) return { lat: +m.coordinates.y, lng: +m.coordinates.x, src: "Census" };
+  } catch (_) {}
+  // 3) Esri
+  try {
+    const u = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?SingleLine=${encodeURIComponent(q)}&f=json&maxLocations=1&outFields=*`;
+    const r = await fetch(u);
+    const j = await r.json();
+    const c = j.candidates?.[0];
+    if (c) return { lat: +c.location.y, lng: +c.location.x, src: "Esri" };
+  } catch (_) {}
+  return null;
+}
+
+/* ---------------- Haversine fallback optimizer ---------------- */
+function haversine(a, b) {
+  const R = 3959, toR = d => d*Math.PI/180;
+  const dLat = toR(b.lat-a.lat), dLng = toR(b.lng-a.lng);
+  const x = Math.sin(dLat/2)**2 + Math.cos(toR(a.lat))*Math.cos(toR(b.lat))*Math.sin(dLng/2)**2;
+  return R*2*Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+}
+function nearestNeighbor(pts) { // pts[0] is start; returns index order
+  const order = [0]; const rem = pts.map((_,i)=>i).slice(1);
+  let cur = 0;
+  while (rem.length) {
+    let best = rem[0], bestD = Infinity;
+    for (const i of rem) { const d = haversine(pts[cur], pts[i]); if (d < bestD) { bestD = d; best = i; } }
+    order.push(best); rem.splice(rem.indexOf(best),1); cur = best;
+  }
+  return order;
+}
+
+/* ---------------- Main optimize ---------------- */
+$("#go").addEventListener("click", optimize);
+
+async function optimize() {
+  const subjRaw = $("#subject").value.trim();
+  const stopLines = $("#stops").value.split("\n").map(s=>s.trim()).filter(Boolean);
+  if (!gpsStart && !subjRaw) return setStatus("Enter a subject address or use your location.", "errc");
+  if (stopLines.length < 1) return setStatus("Add at least one comp address.", "errc");
+
+  $("#go").disabled = true; $("#resultCard").style.display = "none";
+  const bar = $("#goBar"); bar.style.display="block"; bar.firstElementChild.style.width="0%";
+
+  // Build the working list: subject first, then comps. Keep label + raw string.
+  const items = [];
+  items.push({ label: subjRaw || "Current location", raw: subjRaw, subj: true, geo: gpsStart });
+  for (const s of stopLines) items.push({ label: s, raw: s, subj: false, geo: null });
+
+  // Geocode (subject may already have GPS). Nominatim throttle: 1.1s between geocoded items.
+  let done = 0;
+  for (const it of items) {
+    if (!it.geo) {
+      setStatus(`Geocoding ${done+1}/${items.length}: ${it.label}`);
+      it.geo = await geocode(it.raw);
+      await sleep(1100); // Nominatim courtesy
+    }
+    done++; bar.firstElementChild.style.width = Math.round(done/items.length*70)+"%";
+  }
+
+  const located = items.filter(it => it.geo);
+  const failed  = items.filter(it => !it.geo);
+  if (!located[0] || !located[0].subj) {
+    // subject failed to geocode and no GPS -> cannot anchor
+    if (!items[0].geo) { setStatus("Couldn't locate the subject/start address. Refine it and retry.", "errc"); reset(); return; }
+  }
+
+  // Optimize order over located points (index 0 = subject/start).
+  setStatus("Optimizing route on real road distances…");
+  bar.firstElementChild.style.width = "82%";
+  let order, totalMin = null, totalMi = null;
+  try {
+    const coords = located.map(it => `${it.geo.lng},${it.geo.lat}`).join(";");
+    const url = `${OSRM}${coords}?source=first&roundtrip=false&destination=any&overview=false`;
+    const r = await fetch(url);
+    const j = await r.json();
+    if (j.code !== "Ok") throw new Error(j.code || "OSRM error");
+    // waypoints[i].waypoint_index = visiting position of located[i]
+    order = located.map((_,i)=>i).sort((a,b)=> j.waypoints[a].waypoint_index - j.waypoints[b].waypoint_index);
+    totalMin = Math.round(j.trips[0].duration/60);
+    totalMi  = (j.trips[0].distance/1609.34).toFixed(1);
+  } catch (err) {
+    // Fallback: haversine nearest-neighbor
+    order = nearestNeighbor(located.map(it=>it.geo));
+    setStatus("OSRM unavailable — used straight-line fallback ordering.", "warnc");
+  }
+
+  bar.firstElementChild.style.width = "100%";
+  const ordered = order.map(i => located[i]);
+  renderResult(ordered, failed, totalMin, totalMi);
+  reset();
+}
+
+function reset(){ $("#go").disabled=false; setTimeout(()=>{ $("#goBar").style.display="none"; },400); }
+
+function renderResult(ordered, failed, totalMin, totalMi) {
+  const list = $("#resultList"); list.innerHTML = "";
+  const all = ordered.concat(failed); // failed appended at end
+  all.forEach(it => {
+    const li = document.createElement("li");
+    if (it.subj) li.className = "subj";
+    li.innerHTML = `<span class="addr">${escapeHtml(it.label)}` +
+      (it.geo ? `` : `<span class="flag">⚠ not geocoded — sequencing may be off (Google will place it)</span>`) +
+      `</span>`;
+    list.appendChild(li);
+  });
+
+  $("#rTime").textContent = totalMin!=null ? `${Math.floor(totalMin/60)?Math.floor(totalMin/60)+"h ":""}${totalMin%60}m` : "—";
+  $("#rMiles").textContent = totalMi!=null ? `${totalMi} mi` : "—";
+
+  $("#mapsLink").href = buildMapsUrl(all);
+  const note = [];
+  if (failed.length) note.push(`${failed.length} address(es) couldn't be geocoded — included by name, flagged above.`);
+  if (all.length > 11) note.push(`⚠ ${all.length} stops; Google Maps caps at 11 (origin + 9 waypoints + destination). Extra stops are dropped from the link — consider splitting into two routes.`);
+  $("#mapsNote").innerHTML = note.join("<br/>");
+  $("#resultCard").style.display = "block";
+  setStatus(`Route ready — ${ordered.length} located stop(s).`, "ok");
+  $("#resultCard").scrollIntoView({ behavior:"smooth", block:"start" });
+}
+
+function buildMapsUrl(stops) {
+  // Google Maps consumer dir: origin + up to 9 waypoints + destination = 11 max
+  const capped = stops.slice(0, 11);
+  const pt = it => it.geo && !it.raw ? `${it.geo.lat},${it.geo.lng}`
+                  : (it.raw ? encodeURIComponent(normAddr(it.raw)) : `${it.geo.lat},${it.geo.lng}`);
+  const origin = pt(capped[0]);
+  const destination = pt(capped[capped.length-1]);
+  const waypoints = capped.slice(1,-1).map(pt).join("|");
+  let u = `https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=${origin}&destination=${destination}`;
+  if (waypoints) u += `&waypoints=${waypoints}`;
+  return u;
+}
+
+function setStatus(msg, cls="") { const e = $("#status"); e.textContent = msg; e.className = cls; }
+function escapeHtml(s){ return s.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+</script>
+</body>
+</html>
