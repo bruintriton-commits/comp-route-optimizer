@@ -98,8 +98,15 @@
   <!-- STEP 2: image -> OCR -->
   <div class="card">
     <label>Comp sheet photo</label>
-    <label class="file-btn" for="photo">📷 Take photo or choose image</label>
-    <input id="photo" type="file" accept="image/*" />
+    <div class="row">
+      <label class="file-btn" for="photoCam">📷 Take photo</label>
+      <label class="file-btn" for="photoLib">🖼️ Choose image</label>
+    </div>
+    <!-- Two inputs feed one handler: capture="environment" forces the rear camera to
+         open directly (a plain accept="image/*" input won't offer a camera on many
+         Android file pickers); the other opens the gallery/files. -->
+    <input id="photoCam" type="file" accept="image/*" capture="environment" />
+    <input id="photoLib" type="file" accept="image/*" />
     <div class="bar" id="ocrBar"><i></i></div>
     <div id="ocrStatus" class="muted-sm" style="margin-top:6px;"></div>
   </div>
@@ -323,8 +330,7 @@ async function prepareForVision(file) {
   return { data: dataUrl.split(",")[1], media_type: "image/jpeg" };
 }
 
-$("#photo").addEventListener("change", async e => {
-  const file = e.target.files[0];
+async function handlePhoto(file) {
   if (!file) return;
   const bar = $("#ocrBar"); bar.style.display = "block"; bar.firstElementChild.style.width = "0%";
   try {
@@ -368,7 +374,12 @@ $("#photo").addEventListener("change", async e => {
   } catch (err) {
     $("#ocrStatus").innerHTML = `<span class="errc">Couldn't read image: ${err.message}. Type or paste addresses above.</span>`;
   } finally { bar.style.display = "none"; }
-});
+}
+// Both pickers run the same pipeline: "Take photo" (capture -> camera) and
+// "Choose image" (gallery/files). Splitting them guarantees a camera option even on
+// Android file pickers that won't surface one from a plain accept="image/*" input.
+$("#photoCam").addEventListener("change", e => handlePhoto(e.target.files[0]));
+$("#photoLib").addEventListener("change", e => handlePhoto(e.target.files[0]));
 
 // Pull address lines out of OCR text. Anchor on ZIP first (most reliable),
 // then fall back to city-comma or street suffix. Handles suffix-less and
