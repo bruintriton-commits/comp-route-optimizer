@@ -60,6 +60,7 @@
   ol.result li.subj::before { content: "S"; background: var(--lime); color:#0f1411; }
   ol.result li .addr { flex:1; }
   ol.result li .flag { font-size:.72rem; color: var(--warn); display:block; }
+  ol.result li .sub { font-size:.74rem; color: var(--muted); display:block; }
   .stats { display:flex; gap:14px; margin: 10px 0 2px; font-size:.9rem; }
   .stats b { color: var(--lime); }
   .maps { display:block; text-align:center; background:#1a73e8; }
@@ -114,7 +115,7 @@
   </div>
 
   <footer>
-    Geocoding: Nominatim → Census → Esri · Optimization: OSRM <code>/trip</code> (real road durations)<br/>
+    Geocoding: Esri → Census → Nominatim · Optimization: OSRM <code>/trip</code> (real road durations)<br/>
     No account, no key — runs entirely on your device.
   </footer>
 </div>
@@ -197,30 +198,37 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function geocode(addr) {
   const q = normAddr(addr);
-  // 1) Nominatim (throttled by caller to 1/sec)
+  let tentative = null;
+  // 1) Esri — matches against the real street network, fills in the correct
+  //    suffix (St/Ave/Dr) even when the OCR'd address has none, and returns a
+  //    confidence score. No rate limit, so it's primary.
   try {
-    const u = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=${encodeURIComponent(q)}`;
-    const r = await fetch(u, { headers: { "Accept": "application/json" } });
+    const u = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?SingleLine=${encodeURIComponent(q)}&f=json&maxLocations=1&outFields=Match_addr`;
+    const r = await fetch(u);
     const j = await r.json();
-    if (j[0]) return { lat: +j[0].lat, lng: +j[0].lon, src: "OSM" };
+    const c = j.candidates && j.candidates[0];
+    if (c) {
+      const hit = { lat: +c.location.y, lng: +c.location.x, src: "Esri", matched: c.address, score: Math.round(c.score), throttle: false };
+      if (c.score >= 85) return hit;       // confident — use it
+      tentative = hit;                      // weak — keep only if others fail
+    }
   } catch (_) {}
-  // 2) US Census
+  // 2) US Census — also returns a canonical matched address with the suffix.
   try {
     const u = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(q)}&benchmark=Public_AR_Current&format=json`;
     const r = await fetch(u);
     const j = await r.json();
     const m = j.result?.addressMatches?.[0];
-    if (m) return { lat: +m.coordinates.y, lng: +m.coordinates.x, src: "Census" };
+    if (m) return { lat: +m.coordinates.y, lng: +m.coordinates.x, src: "Census", matched: m.matchedAddress, score: 95, throttle: false };
   } catch (_) {}
-  // 3) Esri
+  // 3) Nominatim (throttled 1/sec) — last resort.
   try {
-    const u = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?SingleLine=${encodeURIComponent(q)}&f=json&maxLocations=1&outFields=*`;
-    const r = await fetch(u);
+    const u = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=${encodeURIComponent(q)}`;
+    const r = await fetch(u, { headers: { "Accept": "application/json" } });
     const j = await r.json();
-    const c = j.candidates?.[0];
-    if (c) return { lat: +c.location.y, lng: +c.location.x, src: "Esri" };
+    if (j[0]) return { lat: +j[0].lat, lng: +j[0].lon, src: "OSM", matched: j[0].display_name, score: 85, throttle: true };
   } catch (_) {}
-  return null;
+  return tentative;  // null, or a low-confidence Esri hit flagged for review
 }
 
 /* ---------------- Haversine fallback optimizer ---------------- */
@@ -264,7 +272,7 @@ async function optimize() {
     if (!it.geo) {
       setStatus(`Geocoding ${done+1}/${items.length}: ${it.label}`);
       it.geo = await geocode(it.raw);
-      await sleep(1100); // Nominatim courtesy
+      if (it.geo && it.geo.throttle) await sleep(1100); // only pause when Nominatim was used
     }
     done++; bar.firstElementChild.style.width = Math.round(done/items.length*70)+"%";
   }
@@ -310,9 +318,13 @@ function renderResult(ordered, failed, totalMin, totalMi) {
   all.forEach(it => {
     const li = document.createElement("li");
     if (it.subj) li.className = "subj";
-    li.innerHTML = `<span class="addr">${escapeHtml(it.label)}` +
-      (it.geo ? `` : `<span class="flag">⚠ not geocoded — sequencing may be off (Google will place it)</span>`) +
-      `</span>`;
+    const shown = (it.geo && it.geo.matched) ? it.geo.matched : it.label;
+    const corrected = it.geo && it.geo.matched && simplify(it.geo.matched) !== simplify(it.label);
+    let extra = "";
+    if (corrected) extra += `<span class="sub">↳ read as &ldquo;${escapeHtml(it.label)}&rdquo;</span>`;
+    if (it.geo && it.geo.score < 90) extra += `<span class="flag">⚠ ${it.geo.score}% match — double-check this stop</span>`;
+    if (!it.geo) extra += `<span class="flag">⚠ couldn't geocode — Google will place it by name</span>`;
+    li.innerHTML = `<span class="addr">${escapeHtml(shown)}${extra}</span>`;
     list.appendChild(li);
   });
 
@@ -332,8 +344,9 @@ function renderResult(ordered, failed, totalMin, totalMi) {
 function buildMapsUrl(stops) {
   // Google Maps consumer dir: origin + up to 9 waypoints + destination = 11 max
   const capped = stops.slice(0, 11);
-  const pt = it => it.geo && !it.raw ? `${it.geo.lat},${it.geo.lng}`
-                  : (it.raw ? encodeURIComponent(normAddr(it.raw)) : `${it.geo.lat},${it.geo.lng}`);
+  // Geocoded stops -> exact lat,lng (preserves the optimized order Google can't redo);
+  // failed stops -> address string so Google geocodes them on its end.
+  const pt = it => it.geo ? `${it.geo.lat},${it.geo.lng}` : encodeURIComponent(normAddr(it.raw));
   const origin = pt(capped[0]);
   const destination = pt(capped[capped.length-1]);
   const waypoints = capped.slice(1,-1).map(pt).join("|");
@@ -344,6 +357,8 @@ function buildMapsUrl(stops) {
 
 function setStatus(msg, cls="") { const e = $("#status"); e.textContent = msg; e.className = cls; }
 function escapeHtml(s){ return s.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+// Loose compare to decide if the geocoder corrected the address (ignores punctuation/state).
+function simplify(s){ return (s||"").toLowerCase().replace(/[.,#]/g,"").replace(/\b(california|ca|usa|united states)\b/g,"").replace(/\s+/g," ").trim(); }
 </script>
 </body>
 </html>
