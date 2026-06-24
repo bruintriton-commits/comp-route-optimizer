@@ -168,30 +168,73 @@ async function preprocess(file) {
   return canvas;
 }
 
+// Native on-device text recognition (Shape Detection API). On Android Chrome this
+// is backed by the platform ML engine (same family as Google Lens) — far more
+// accurate than Tesseract on photos. Returns "" if unavailable/empty so we fall back.
+async function detectNative(file) {
+  if (!("TextDetector" in window)) return "";
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+  catch (_) { bmp = await createImageBitmap(file); }
+  const blocks = await new window.TextDetector().detect(bmp);
+  if (!blocks || !blocks.length) return "";
+  // Flatten blocks into positioned line-items (a block may hold several lines).
+  const items = [];
+  for (const b of blocks) {
+    const bb = b.boundingBox;
+    const parts = (b.rawValue || "").split(/\n/).filter(p => p.trim());
+    const lh = bb.height / Math.max(parts.length, 1);
+    parts.forEach((p, i) => items.push({ x: bb.x, y: bb.y + i*lh, h: lh || 12, s: p.trim() }));
+  }
+  // Group items into rows by vertical proximity, order each row left-to-right,
+  // so a comp sheet's columns recombine into one address line per row.
+  items.sort((a,b) => a.y - b.y || a.x - b.x);
+  const rows = [];
+  for (const it of items) {
+    const last = rows[rows.length-1];
+    if (last && Math.abs(it.y - last.y) <= Math.max(it.h, last.h) * 0.6) {
+      last.items.push(it); last.h = Math.max(last.h, it.h);
+    } else rows.push({ y: it.y, h: it.h, items: [it] });
+  }
+  return rows.map(r => r.items.sort((a,b)=>a.x-b.x).map(i=>i.s).join(" ")).join("\n");
+}
+
 $("#photo").addEventListener("change", async e => {
   const file = e.target.files[0];
   if (!file) return;
   const bar = $("#ocrBar"); bar.style.display = "block"; bar.firstElementChild.style.width = "0%";
-  $("#ocrStatus").textContent = "Enhancing image…";
   try {
-    const canvas = await preprocess(file);
-    $("#ocrStatus").textContent = "Reading image… (first run downloads the OCR engine, ~10s)";
-    const { data } = await Tesseract.recognize(canvas, "eng", {
-      logger: m => { if (m.status === "recognizing text") bar.firstElementChild.style.width = Math.round(m.progress*100)+"%"; }
-    });
-    const found = parseAddresses(data.text);
+    let text = "", engine = "";
+    // 1) Try native on-device recognition first (best on photos, no download).
+    if ("TextDetector" in window) {
+      $("#ocrStatus").textContent = "Reading with your phone's text recognition…";
+      bar.firstElementChild.style.width = "45%";
+      try { text = await detectNative(file); if (text.trim()) engine = "phone OCR"; } catch (_) {}
+      bar.firstElementChild.style.width = "100%";
+    }
+    // 2) Fall back to Tesseract (with preprocessing) if native is absent or empty.
+    if (!text.trim()) {
+      $("#ocrStatus").textContent = "Enhancing image…";
+      const canvas = await preprocess(file);
+      $("#ocrStatus").textContent = "Reading image… (first run downloads the OCR engine, ~10s)";
+      const { data } = await Tesseract.recognize(canvas, "eng", {
+        logger: m => { if (m.status === "recognizing text") bar.firstElementChild.style.width = Math.round(m.progress*100)+"%"; }
+      });
+      text = data.text; engine = "Tesseract";
+    }
+    const found = parseAddresses(text);
     const existing = $("#stops").value.trim();
     if (found.length) {
       $("#stops").value = (existing ? existing + "\n" : "") + found.join("\n");
-      $("#ocrStatus").innerHTML = `<span class="ok">Found ${found.length} address${found.length>1?"es":""} — review & edit above.</span>`;
+      $("#ocrStatus").innerHTML = `<span class="ok">Found ${found.length} address${found.length>1?"es":""} via ${engine} — review & edit above.</span>`;
     } else {
-      // Fallback: dump the raw scan so the user can prune it, never leave them empty.
-      const raw = data.text.split(/\n+/).map(l => l.replace(/\s+/g," ").trim()).filter(l => l.length > 3).join("\n");
+      // Never leave the box empty — dump the raw scan so the user can prune it.
+      const raw = text.split(/\n+/).map(l => l.replace(/\s+/g," ").trim()).filter(l => l.length > 3).join("\n");
       $("#stops").value = (existing ? existing + "\n" : "") + raw;
-      $("#ocrStatus").innerHTML = `<span class="warnc">Couldn't auto-pick addresses — dropped the raw scan above. Delete the non-address lines and keep the stops.</span>`;
+      $("#ocrStatus").innerHTML = `<span class="warnc">Couldn't auto-pick addresses (${engine}) — dropped the raw scan above. Delete the non-address lines and keep the stops.</span>`;
     }
   } catch (err) {
-    $("#ocrStatus").innerHTML = `<span class="errc">OCR failed: ${err.message}. Type addresses manually.</span>`;
+    $("#ocrStatus").innerHTML = `<span class="errc">Couldn't read image: ${err.message}. Type or paste addresses above.</span>`;
   } finally { bar.style.display = "none"; }
 });
 
