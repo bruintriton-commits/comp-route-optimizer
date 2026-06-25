@@ -53,6 +53,12 @@
   button:disabled { opacity: .5; }
   button.big { width: 100%; padding: 16px; font-size: 1.1rem; margin-top: 4px; }
   .hint { font-size: .78rem; color: var(--muted); margin: 8px 2px 0; }
+  .seg { display:flex; gap:6px; margin-top:10px; }
+  .seg-btn { flex:1; appearance:none; cursor:pointer; background:#232d25; color:var(--text);
+    border:1px solid var(--line); border-radius:10px; padding:9px 6px; font-size:.8rem;
+    font-weight:600; line-height:1.15; text-align:center; }
+  .seg-btn .ico { display:block; font-size:1.05rem; margin-bottom:2px; }
+  .seg-btn.active { background:var(--green); color:#fff; border-color:var(--green); }
   .file-btn { display:block; width:100%; text-align:center; background:#232d25;
     border:1px dashed var(--line); color: var(--text); border-radius:10px; padding:18px;
     font-weight:600; }
@@ -68,6 +74,9 @@
     background: var(--green); color:#fff; font-size:.85rem; font-weight:700; display:flex;
     align-items:center; justify-content:center; margin-top:1px; }
   ol.result li.subj::before { content: "S"; background: var(--lime); color:#0f1411; }
+  ol.result li.subj { counter-increment: none; }   /* subject shows "S", so comps number from 1 */
+  ol.result li.ret { counter-increment: none; color: var(--muted); }
+  ol.result li.ret::before { content: "↩"; background: transparent; color: var(--lime); border: 1px solid var(--line); }
   ol.result li .addr { flex:1; }
   ol.result li .flag { font-size:.72rem; color: var(--warn); display:block; }
   ol.result li .sub { font-size:.74rem; color: var(--muted); display:block; }
@@ -77,22 +86,39 @@
   a.maps { text-decoration:none; }
   .muted-sm { color: var(--muted); font-size:.75rem; }
   footer { text-align:center; color:var(--muted); font-size:.72rem; margin-top:20px; }
+  .drop { display:block; width:100%; text-align:center; background:#232d25; cursor:pointer;
+    border:1px dashed var(--line); color:var(--text); border-radius:10px; padding:22px 14px; font-weight:600; }
+  .drop small { display:block; color:var(--muted); font-weight:400; font-size:.78rem; margin-top:5px; line-height:1.35; }
+  .drop:hover { border-color:#3a4a3e; background:#27332a; }
+  .or { text-align:center; color:var(--muted); font-size:.72rem; letter-spacing:.04em; margin:12px 0 10px; }
+  .chk { display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0;
+    color:var(--muted); font-size:.8rem; margin:12px 0 0; cursor:pointer; }
+  .chk input { width:16px; height:16px; accent-color:var(--green); flex:0 0 auto; margin:0; }
+  #dropOverlay { position:fixed; inset:0; z-index:100; display:none; align-items:center; justify-content:center;
+    background:rgba(15,20,17,.88); color:var(--lime); font-size:1.3rem; font-weight:700; text-align:center;
+    border:3px dashed var(--lime); pointer-events:none; }
+  #dropOverlay.show { display:flex; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Comp Route Optimizer</h1>
-  <p class="sub">Photo &rarr; addresses &rarr; real-road optimized route &rarr; Google Maps</p>
+  <p class="sub">Photo or spreadsheet &rarr; addresses &rarr; real-road optimized route &rarr; Google Maps</p>
 
   <!-- STEP 1: start point -->
   <div class="card">
-    <label>Subject / starting point</label>
+    <label>Subject property</label>
     <div class="ac-wrap">
       <input id="subject" type="text" placeholder="e.g. 27639 Paper Bark Ave, Murrieta, CA 92562" autocomplete="off" />
       <div id="acList" class="ac-list"></div>
     </div>
     <button class="ghost" id="useGps" style="margin-top:8px;">📍 Use my current location instead</button>
-    <div class="hint">This stays locked as stop&nbsp;1. The route ends wherever is fastest (no forced return trip).</div>
+    <div class="seg" id="routeMode" role="radiogroup" aria-label="Subject's role in the route">
+      <button type="button" class="seg-btn active" data-mode="start" role="radio" aria-checked="true"><span class="ico">📍</span>Start here</button>
+      <button type="button" class="seg-btn" data-mode="end" role="radio" aria-checked="false"><span class="ico">🏁</span>End here</button>
+      <button type="button" class="seg-btn" data-mode="round" role="radio" aria-checked="false"><span class="ico">🔁</span>Round trip</button>
+    </div>
+    <div class="hint" id="modeHint">Subject is stop&nbsp;1. The route ends wherever&rsquo;s fastest &mdash; no forced return trip.</div>
   </div>
 
   <!-- STEP 2: image -> OCR -->
@@ -109,6 +135,23 @@
     <input id="photoLib" type="file" accept="image/*" />
     <div class="bar" id="ocrBar"><i></i></div>
     <div id="ocrStatus" class="muted-sm" style="margin-top:6px;"></div>
+  </div>
+
+  <!-- STEP 2b: import a spreadsheet (CSV / Excel / Google Sheets) -->
+  <div class="card">
+    <label>Or import a list — CSV · Excel · Google Sheets</label>
+    <div class="drop" id="dropZone">📄 Drop a file here, or tap to choose
+      <small>MLS export, .csv or .xlsx — addresses (and coordinates, when present) are pulled automatically</small>
+    </div>
+    <input id="importFile" type="file"
+      accept=".csv,.tsv,.txt,.xlsx,.xls,.xlsm,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+    <div class="or">— or paste a Google Sheets link —</div>
+    <div class="row">
+      <input id="gsheetUrl" type="text" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off" style="flex:3" />
+      <button class="secondary" id="gsheetBtn" style="flex:1">Import</button>
+    </div>
+    <label class="chk"><input type="checkbox" id="verifyCoords" checked /> Verify imported coordinates against the map (recommended)</label>
+    <div id="importStatus" class="muted-sm" style="margin-top:8px; min-height:1.1em;"></div>
   </div>
 
   <!-- STEP 3: editable addresses -->
@@ -143,11 +186,19 @@
   </footer>
 </div>
 
+<div id="dropOverlay">Drop CSV / Excel to import comps</div>
+
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const OSRM = "https://router.project-osrm.org/trip/v1/driving/";
 const DEFAULT_REGION = "CA"; // Southern California territory
+// Imported-coordinate verification: when a file supplies lat/lng, we still geocode the
+// address and compare. If a confident street-network match (>= VERIFY_MIN) sits more than
+// CONFLICT_MI from the file's pin, we treat the file pin as wrong and defer to the mapped
+// location — this is what catches new-construction MLS pins that haven't been updated.
+const CONFLICT_MI = 0.15;  // ~240 m — above normal rooftop-vs-parcel-centroid jitter
+const VERIFY_MIN = 90;     // min geocoder confidence (0-100) to override a file pin
 
 // Paste your deployed Cloudflare Worker URL here to turn on Claude vision extraction
 // (reliable on photos of screens/printouts). Leave "" to keep on-device OCR only
@@ -155,6 +206,7 @@ const DEFAULT_REGION = "CA"; // Southern California territory
 const WORKER_URL = "https://comp-vision.signumvaluation.workers.dev";
 
 let gpsStart = null; // {lat,lng} if user picked GPS
+let stopCoords = new Map(); // address string -> {lat,lng} from an imported file (skips geocoding)
 
 /* ---------------- GPS ---------------- */
 $("#useGps").addEventListener("click", () => {
@@ -168,6 +220,28 @@ $("#useGps").addEventListener("click", () => {
     { enableHighAccuracy: true, timeout: 10000 }
   );
 });
+
+/* ---------------- Route mode: subject = start / end / round trip ---------------- */
+// Which end of the route the subject anchors. Read by optimize() to set OSRM's
+// source/destination/roundtrip and to build the Google Maps URL.
+let routeModeVal = "start";
+const ROUTE_HINTS = {
+  start: "Subject is stop 1. The route ends wherever’s fastest — no forced return trip.",
+  end:   "The route starts wherever’s fastest and finishes at the subject.",
+  round: "The route starts at the subject and loops back to it (drive time includes the return).",
+};
+function routeMode(){ return routeModeVal; }
+$("#routeMode").addEventListener("click", e => {
+  const b = e.target.closest(".seg-btn"); if (!b) return;
+  routeModeVal = b.dataset.mode;
+  [...$("#routeMode").children].forEach(c => {
+    const on = c === b;
+    c.classList.toggle("active", on);
+    c.setAttribute("aria-checked", on ? "true" : "false");
+  });
+  $("#modeHint").textContent = ROUTE_HINTS[routeModeVal];
+});
+
 /* ---------------- Address + place autocomplete (Esri keyless "suggest") ---------------- */
 // Type-ahead on the subject + stops fields via the same provider the geocoder uses,
 // biased to the SoCal territory so local results rank first. Tap/click to fill.
@@ -384,6 +458,173 @@ async function handlePhoto(file) {
 $("#photoCam").addEventListener("change", e => handlePhoto(e.target.files[0]));
 $("#photoLib").addEventListener("change", e => handlePhoto(e.target.files[0]));
 
+/* ---------------- File import (CSV / Excel / Google Sheets) ---------------- */
+// Pulls comps from a spreadsheet: MLS exports (StreetNumber/StreetName/City/… columns),
+// a single "Address" column, or anything in between. If the file carries Latitude/
+// Longitude, those coordinates are used directly so geocoding is skipped — instant + exact.
+let _xlsxLoading = null;
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = src; s.async = true;
+    s.onload = res; s.onerror = () => rej(new Error("load failed: " + src));
+    document.head.appendChild(s);
+  });
+}
+
+// RFC4180-ish parser: handles quoted fields, embedded commas/newlines, and "" escapes.
+// Returns an array of rows (each an array of cell strings). Auto-detects tab vs comma.
+function parseDelimited(text) {
+  text = text.replace(/^﻿/, "");                       // strip BOM
+  const head = text.slice(0, (text.indexOf("\n") + 1) || text.length);
+  const delim = head.split("\t").length > head.split(",").length ? "\t" : ",";
+  const rows = []; let row = [], field = "", inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else if (c === '"') { inQ = true; }
+    else if (c === delim) { row.push(field); field = ""; }
+    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (c !== "\r") { field += c; }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(c => String(c).trim() !== ""));   // drop blank lines
+}
+
+// Excel via SheetJS, lazy-loaded from CDN only when an .xlsx is actually dropped.
+async function parseExcel(file) {
+  if (!window.XLSX) {
+    if (!_xlsxLoading) _xlsxLoading = loadScript("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js")
+      .catch(() => loadScript("https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"));
+    await _xlsxLoading;
+  }
+  const wb = window.XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return window.XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: "" });
+}
+
+// rows = array-of-arrays (row 0 = header). Returns [{address, lat, lng}].
+// Column detection is by header NAME (the MLS export has 200+ columns, some duplicated
+// and some empty — e.g. StreetNumber blank with the value in StreetNumberNumeric). So we
+// collect ALL columns matching each field and, per row, take the first non-empty value.
+function extractFromRows(rows) {
+  if (!rows || rows.length < 2) return [];
+  const norm = rows[0].map(h => String(h == null ? "" : h).trim().toLowerCase().replace(/[^a-z0-9]/g, ""));
+  const cols = (...names) => norm.map((h, i) => names.includes(h) ? i : -1).filter(i => i >= 0);
+  const X = {
+    num:    cols("streetnumber", "streetnumbernumeric", "housenumber", "streetno", "stnumber"),
+    dirpre: cols("streetdirprefix", "predirectional"),
+    name:   cols("streetname", "stname"),
+    suffix: cols("streetsuffix", "streettype"),
+    dirsuf: cols("streetdirsuffix", "postdirectional"),
+    city:   cols("city", "municipality", "cityname"),
+    state:  cols("stateorprovince", "state"),
+    zip:    cols("postalcode", "zipcode", "zip", "postal"),
+    lat:    cols("latitude", "lat"),
+    lng:    cols("longitude", "lng", "lon", "long"),
+    addr:   cols("address", "streetaddress", "fulladdress", "propertyaddress", "siteaddress", "completeaddress", "addressline1"),
+  };
+  const out = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r] || [];
+    // first non-empty value across all columns matching a field
+    const g = idxs => { for (const i of idxs) { const v = (i < row.length && row[i] != null) ? String(row[i]).trim() : ""; if (v) return v; } return ""; };
+    // Prefer building from MLS street components; else fall back to a single Address column.
+    let line = (X.name.length && g(X.name))
+      ? [g(X.num), g(X.dirpre), g(X.name), g(X.suffix), g(X.dirsuf)].filter(Boolean).join(" ")
+      : (X.addr.length ? g(X.addr) : "");
+    line = line.replace(/\s+/g, " ").trim();
+    if (!line) continue;
+    // Append City / State / Zip only when present and not already in the string.
+    const city = g(X.city), state = g(X.state), zip = g(X.zip), low = line.toLowerCase();
+    if (city && !low.includes(city.toLowerCase())) line += `, ${city}`;
+    if (state && !new RegExp(`\\b${state}\\b`, "i").test(line)) line += `, ${state}`;
+    if (zip && !line.includes(zip)) line += ` ${zip}`;
+    line = line.replace(/\s+,/g, ",").replace(/,\s*,/g, ",").replace(/\s+/g, " ").trim();
+    const lat = parseFloat(g(X.lat)), lng = parseFloat(g(X.lng));
+    const ok = Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0);
+    out.push({ address: line, lat: ok ? lat : null, lng: ok ? lng : null });
+  }
+  return out;
+}
+
+function setImport(msg, cls) { $("#importStatus").innerHTML = cls ? `<span class="${cls}">${escapeHtml(msg)}</span>` : escapeHtml(msg); }
+
+// Merge extracted records into the stops box (dedupe), stashing any file coordinates
+// so optimize() can skip geocoding for those exact lines.
+function finishImport(rows, source) {
+  const recs = extractFromRows(rows);
+  if (!recs.length) return setImport(`No addresses found in ${source}. It needs a street/address column (City/State/Zip help too).`, "warnc");
+  const ta = $("#stops");
+  const existing = ta.value.split("\n").map(s => s.trim()).filter(Boolean);
+  const seen = new Set(existing), added = [];
+  let coords = 0;
+  for (const rec of recs) {
+    const a = rec.address.trim();
+    if (!a || seen.has(a)) continue;
+    seen.add(a); added.push(a);
+    if (rec.lat != null) { stopCoords.set(a, { lat: rec.lat, lng: rec.lng }); coords++; }
+  }
+  if (!added.length) return setImport(`Those ${recs.length} address(es) from ${source} are already in the list.`, "warnc");
+  ta.value = (existing.length ? existing.join("\n") + "\n" : "") + added.join("\n");
+  setImport(`Imported ${added.length} address${added.length > 1 ? "es" : ""} from ${source}.` +
+            (coords ? ` ${coords} include coordinates — they'll be checked against the map when you optimize.` : "") + " Review & edit below.", "ok");
+}
+
+async function handleImportFile(file) {
+  if (!file) return;
+  setImport(`Reading ${file.name}…`);
+  try {
+    const name = file.name.toLowerCase(), type = file.type || "";
+    const isExcel = /\.(xlsx|xls|xlsm|xlsb)$/.test(name) || type.includes("sheet") || type.includes("ms-excel");
+    const rows = isExcel ? await parseExcel(file) : parseDelimited(await file.text());
+    finishImport(rows, file.name);
+  } catch (err) {
+    setImport(`Couldn't read ${file.name}: ${err.message}. Try saving it as .csv and dropping it again.`, "errc");
+  }
+}
+
+// Google Sheets: turn a share link into the public CSV export (gviz) and pull it in.
+function gsheetCsvUrl(url) {
+  const id = (url.match(/\/spreadsheets\/d\/([\w-]+)/) || [])[1];
+  if (!id) return null;
+  const gid = (url.match(/[#&?]gid=(\d+)/) || [])[1] || "0";
+  return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`;
+}
+async function importFromGSheet() {
+  const url = $("#gsheetUrl").value.trim();
+  if (!url) return;
+  const csv = gsheetCsvUrl(url);
+  if (!csv) return setImport("That doesn't look like a Google Sheets link.", "errc");
+  setImport("Fetching Google Sheet…");
+  try {
+    const r = await fetch(csv);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const text = await r.text();
+    if (/^\s*<(?:!doctype|html)/i.test(text)) throw new Error("private");   // got a login page, not CSV
+    finishImport(parseDelimited(text), "Google Sheet");
+  } catch (_) {
+    setImport("Couldn't fetch that sheet — make sure it's shared “Anyone with the link can view,” or download it as CSV/Excel and drop it here.", "errc");
+  }
+}
+
+// Wiring: click-to-pick, Google Sheets import, and whole-window drag & drop.
+$("#dropZone").addEventListener("click", () => $("#importFile").click());
+$("#importFile").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; handleImportFile(f); });
+$("#gsheetBtn").addEventListener("click", importFromGSheet);
+$("#gsheetUrl").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); importFromGSheet(); } });
+
+(function dragDrop() {
+  const overlay = $("#dropOverlay"); let depth = 0;
+  const hasFiles = e => Array.from((e.dataTransfer && e.dataTransfer.types) || []).includes("Files");
+  addEventListener("dragenter", e => { if (!hasFiles(e)) return; e.preventDefault(); if (++depth === 1) overlay.classList.add("show"); });
+  addEventListener("dragover",  e => { if (hasFiles(e)) e.preventDefault(); });
+  addEventListener("dragleave", e => { if (!hasFiles(e)) return; if (--depth <= 0) { depth = 0; overlay.classList.remove("show"); } });
+  addEventListener("drop",      e => { if (!hasFiles(e)) return; e.preventDefault(); depth = 0; overlay.classList.remove("show"); handleImportFile(e.dataTransfer.files[0]); });
+})();
+
 // Pull address lines out of OCR text. Anchor on ZIP first (most reliable),
 // then fall back to city-comma or street suffix. Handles suffix-less and
 // Spanish street names (Avenida, Via, Calle, El/La, Camino, Paseo...).
@@ -473,6 +714,33 @@ function nearestNeighbor(pts) { // pts[0] is start; returns index order
   return order;
 }
 
+/* ---------------- Imported-coordinate reconciliation ---------------- */
+// Compare a file-provided pin (it.fileGeo) against a fresh geocode (gc) and decide which to
+// trust. Sets it.conflict (for the result flags) and it.deferToGoogle (let Google place the
+// pin from the address). Returns the geo object to route with.
+function reconcileImported(it, gc) {
+  const file = it.fileGeo;
+  const trustFile = { lat: file.lat, lng: file.lng, src: "File", matched: it.raw, score: 100, throttle: false };
+  if (!gc) {                                    // address didn't geocode — can't verify
+    it.conflict = { kind: "unverified", msg: "couldn't verify the file's location — please check this stop" };
+    return trustFile;
+  }
+  const dist = haversine(file, gc);             // miles between the file pin and the map match
+  if (dist <= CONFLICT_MI) {                    // they agree — the file pin is good
+    it.conflict = { kind: "ok", dist };
+    return trustFile;
+  }
+  if (gc.score >= VERIFY_MIN) {                 // far apart + confident match -> trust the map
+    it.conflict = { kind: "override", dist, msg: `file pin was ${fmtMi(dist)} from the mapped address — using the mapped location` };
+    it.deferToGoogle = true;
+    return gc;
+  }
+  it.conflict = { kind: "lowconf", dist,        // far apart but the geocode is shaky -> keep file, warn
+    msg: `file pin is ${fmtMi(dist)} from a low-confidence match (${gc.score}%) — verify this stop` };
+  return trustFile;
+}
+function fmtMi(mi) { return mi < 0.1 ? `${Math.round(mi * 5280)} ft` : `${mi.toFixed(1)} mi`; }
+
 /* ---------------- Main optimize ---------------- */
 $("#go").addEventListener("click", optimize);
 
@@ -488,15 +756,28 @@ async function optimize() {
   // Build the working list: subject first, then comps. Keep label + raw string.
   const items = [];
   items.push({ label: subjRaw || "Current location", raw: subjRaw, subj: true, geo: gpsStart });
-  for (const s of stopLines) items.push({ label: s, raw: s, subj: false, geo: null });
+  for (const s of stopLines) {
+    const c = stopCoords.get(s);   // coords from an imported file (may be a stale/wrong MLS pin)
+    items.push({ label: s, raw: s, subj: false, geo: null, fileGeo: c || null });
+  }
+  const verify = !$("#verifyCoords") || $("#verifyCoords").checked;
 
-  // Geocode (subject may already have GPS). Nominatim throttle: 1.1s between geocoded items.
+  // Resolve every stop's location. The subject may already have GPS. Imported file coords are
+  // either trusted as-is (verify off) or cross-checked against the geocoder (verify on), so a
+  // wrong MLS pin defers to the mapped address. Nominatim throttle: 1.1s only when it's used.
   let done = 0;
   for (const it of items) {
-    if (!it.geo) {
+    if (!it.geo && it.fileGeo && !verify) {
+      it.geo = { lat: it.fileGeo.lat, lng: it.fileGeo.lng, src: "File", matched: it.raw, score: 100, throttle: false };
+    } else if (!it.geo && it.fileGeo) {
+      setStatus(`Verifying ${done+1}/${items.length}: ${it.label}`);
+      const gc = await geocode(it.raw);
+      if (gc && gc.throttle) await sleep(1100);
+      it.geo = reconcileImported(it, gc);
+    } else if (!it.geo) {
       setStatus(`Geocoding ${done+1}/${items.length}: ${it.label}`);
       it.geo = await geocode(it.raw);
-      if (it.geo && it.geo.throttle) await sleep(1100); // only pause when Nominatim was used
+      if (it.geo && it.geo.throttle) await sleep(1100);
     }
     done++; bar.firstElementChild.style.width = Math.round(done/items.length*70)+"%";
   }
@@ -508,74 +789,121 @@ async function optimize() {
     if (!items[0].geo) { setStatus("Couldn't locate the subject/start address. Refine it and retry.", "errc"); reset(); return; }
   }
 
-  // Optimize order over located points (index 0 = subject/start).
+  // Optimize order over located points. located[0] is the subject; how it anchors the
+  // route depends on the chosen mode:
+  //   start -> subject is the fixed start, open end  (source=first, destination=any)
+  //   end   -> open start, subject is the fixed end  (source=any,   destination=last)
+  //   round -> start at and return to the subject    (source=first, roundtrip=true)
+  // OSRM's source/destination keys only fix the FIRST/LAST input coordinate, so we order
+  // the input to put the subject where the mode needs it, then map the result back.
+  const mode = routeMode();
   setStatus("Optimizing route on real road distances…");
   bar.firstElementChild.style.width = "82%";
-  let order, totalMin = null, totalMi = null;
+  const subj = located[0], comps = located.slice(1);
+  const osrmInput = mode === "end" ? [...comps, subj] : [subj, ...comps];
+  const params = mode === "end"   ? "source=any&destination=last&roundtrip=false"
+               : mode === "round" ? "source=first&roundtrip=true"
+               :                     "source=first&destination=any&roundtrip=false";
+  let ordered, totalMin = null, totalMi = null;
   try {
-    const coords = located.map(it => `${it.geo.lng},${it.geo.lat}`).join(";");
-    const url = `${OSRM}${coords}?source=first&roundtrip=false&destination=any&overview=false`;
+    const coords = osrmInput.map(it => `${it.geo.lng},${it.geo.lat}`).join(";");
+    const url = `${OSRM}${coords}?${params}&overview=false`;
     const r = await fetch(url);
     const j = await r.json();
     if (j.code !== "Ok") throw new Error(j.code || "OSRM error");
-    // waypoints[i].waypoint_index = visiting position of located[i]
-    order = located.map((_,i)=>i).sort((a,b)=> j.waypoints[a].waypoint_index - j.waypoints[b].waypoint_index);
+    // waypoints[i].waypoint_index = visiting position of osrmInput[i]
+    const ord = osrmInput.map((_,i)=>i).sort((a,b)=> j.waypoints[a].waypoint_index - j.waypoints[b].waypoint_index);
+    ordered = ord.map(i => osrmInput[i]);
     totalMin = Math.round(j.trips[0].duration/60);
     totalMi  = (j.trips[0].distance/1609.34).toFixed(1);
   } catch (err) {
-    // Fallback: haversine nearest-neighbor
-    order = nearestNeighbor(located.map(it=>it.geo));
+    // Fallback: haversine nearest-neighbor from the subject. For "end", reverse so the
+    // subject lands last; "round" closes the loop via the Maps URL.
+    let nn = nearestNeighbor(located.map(it=>it.geo));
+    if (mode === "end") nn = nn.reverse();
+    ordered = nn.map(i => located[i]);
     setStatus("OSRM unavailable — used straight-line fallback ordering.", "warnc");
   }
 
   bar.firstElementChild.style.width = "100%";
-  const ordered = order.map(i => located[i]);
-  renderResult(ordered, failed, totalMin, totalMi);
+  renderResult(ordered, failed, totalMin, totalMi, mode);
   reset();
 }
 
 function reset(){ $("#go").disabled=false; setTimeout(()=>{ $("#goBar").style.display="none"; },400); }
 
-function renderResult(ordered, failed, totalMin, totalMi) {
+function renderResult(ordered, failed, totalMin, totalMi, mode) {
   const list = $("#resultList"); list.innerHTML = "";
   const all = ordered.concat(failed); // failed appended at end
   all.forEach(it => {
     const li = document.createElement("li");
     if (it.subj) li.className = "subj";
     const shown = (it.geo && it.geo.matched) ? it.geo.matched : it.label;
-    const corrected = it.geo && it.geo.matched && simplify(it.geo.matched) !== simplify(it.label);
+    const cf = it.conflict;
+    // Suppress the OCR-style "read as" note for imported stops; their conflict note covers it.
+    const corrected = it.geo && it.geo.matched && !cf && simplify(it.geo.matched) !== simplify(it.label);
     let extra = "";
     if (corrected) extra += `<span class="sub">↳ read as &ldquo;${escapeHtml(it.label)}&rdquo;</span>`;
+    if (cf && cf.kind === "override") extra += `<span class="sub">↳ file address: &ldquo;${escapeHtml(it.label)}&rdquo;</span>`;
+    if (cf && cf.kind !== "ok") extra += `<span class="flag">⚠ ${escapeHtml(cf.msg)}</span>`;
+    else if (cf && cf.kind === "ok") extra += `<span class="sub">✓ location verified against the map</span>`;
     if (it.geo && it.geo.score < 90) extra += `<span class="flag">⚠ ${it.geo.score}% match — double-check this stop</span>`;
     if (!it.geo) extra += `<span class="flag">⚠ couldn't geocode — Google will place it by name</span>`;
     li.innerHTML = `<span class="addr">${escapeHtml(shown)}${extra}</span>`;
     list.appendChild(li);
   });
+  // Round trip: show the loop back to the subject as a final, un-numbered row.
+  if (mode === "round" && ordered[0]) {
+    const s = ordered[0], shown = (s.geo && s.geo.matched) ? s.geo.matched : s.label;
+    const li = document.createElement("li"); li.className = "ret";
+    li.innerHTML = `<span class="addr">Return to ${escapeHtml(shown)}<span class="sub">round trip — back to the subject</span></span>`;
+    list.appendChild(li);
+  }
 
   $("#rTime").textContent = totalMin!=null ? `${Math.floor(totalMin/60)?Math.floor(totalMin/60)+"h ":""}${totalMin%60}m` : "—";
   $("#rMiles").textContent = totalMi!=null ? `${totalMi} mi` : "—";
 
-  $("#mapsLink").href = buildMapsUrl(all);
+  // Maps URL: for end-mode the subject must stay the destination, so place any failed
+  // (appended-by-name) stops BEFORE it; round trip makes the subject origin AND destination.
+  const roundTrip = mode === "round";
+  const mapsStops = mode === "end"
+    ? ordered.slice(0, -1).concat(failed, [ordered[ordered.length - 1]])
+    : all;
+  $("#mapsLink").href = buildMapsUrl(mapsStops, roundTrip);
   const note = [];
+  if (roundTrip) note.push("↩ Round trip — the map link starts and ends at the subject.");
   if (failed.length) note.push(`${failed.length} address(es) couldn't be geocoded — included by name, flagged above.`);
-  if (all.length > 11) note.push(`⚠ ${all.length} stops; Google Maps caps at 11 (origin + 9 waypoints + destination). Extra stops are dropped from the link — consider splitting into two routes.`);
+  const cap = roundTrip ? 10 : 11;
+  if (all.length > cap) note.push(`⚠ ${all.length} stops; Google Maps caps at ${cap} (${roundTrip ? "subject + 9 stops, looping back" : "origin + 9 waypoints + destination"}). Extra middle stops are dropped from the link — consider splitting into two routes.`);
+  const flagged = all.filter(it => it.conflict && it.conflict.kind !== "ok");
+  if (flagged.length) note.push(`⚠ ${flagged.length} imported stop(s) had a coordinate mismatch — review the ⚠ notes above.`);
   $("#mapsNote").innerHTML = note.join("<br/>");
   $("#resultCard").style.display = "block";
   setStatus(`Route ready — ${ordered.length} located stop(s).`, "ok");
   $("#resultCard").scrollIntoView({ behavior:"smooth", block:"start" });
 }
 
-function buildMapsUrl(stops) {
-  // Google Maps consumer dir: origin + up to 9 waypoints + destination = 11 max
-  const capped = stops.slice(0, 11);
-  // Geocoded stops -> exact lat,lng (preserves the optimized order Google can't redo);
-  // failed stops -> address string so Google geocodes them on its end.
-  const pt = it => it.geo ? `${it.geo.lat},${it.geo.lng}` : encodeURIComponent(normAddr(it.raw));
-  const origin = pt(capped[0]);
-  const destination = pt(capped[capped.length-1]);
-  const waypoints = capped.slice(1,-1).map(pt).join("|");
-  let u = `https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=${origin}&destination=${destination}`;
-  if (waypoints) u += `&waypoints=${waypoints}`;
+function buildMapsUrl(stops, roundTrip) {
+  // Geocoded stops -> exact lat,lng (preserves the optimized order Google can't redo).
+  // Failed stops, and conflicting-pin stops we chose to defer to Google -> address string
+  // so Google places them itself.
+  const pt = it => (it.geo && !it.deferToGoogle) ? `${it.geo.lat},${it.geo.lng}` : encodeURIComponent(normAddr(it.raw));
+  const base = (o, d) => `https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=${o}&destination=${d}`;
+  if (roundTrip) {
+    // Subject is both origin and destination; up to 9 waypoints loop back to it.
+    const subj = stops[0];
+    const mids = stops.slice(1).slice(0, 9).map(pt).join("|");
+    let u = base(pt(subj), pt(subj));
+    if (mids) u += `&waypoints=${mids}`;
+    return u;
+  }
+  // Keep the first and last as origin/destination; only the MIDDLE is capped to 9 (Google's
+  // origin + 9 waypoints + destination = 11 limit). This guarantees an end-mode route still
+  // terminates at the subject even when there are more than 11 stops.
+  const origin = stops[0], destination = stops[stops.length - 1];
+  const mids = stops.slice(1, -1).slice(0, 9).map(pt).join("|");
+  let u = base(pt(origin), pt(destination));
+  if (mids) u += `&waypoints=${mids}`;
   return u;
 }
 
