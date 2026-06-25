@@ -209,13 +209,38 @@ let gpsStart = null; // {lat,lng} if user picked GPS
 let stopCoords = new Map(); // address string -> {lat,lng} from an imported file (skips geocoding)
 
 /* ---------------- GPS ---------------- */
+// Desktops usually have no GPS chip, so getCurrentPosition falls back to Wi-Fi positioning
+// (tens–hundreds of m) or, worse, an IP-based guess (often miles off — an ISP hub, not the user).
+// coords.accuracy is the radius of that uncertainty; we surface it so a bad fix announces itself
+// instead of silently anchoring the route in the wrong place. enableHighAccuracy can't conjure a
+// GPS source the hardware lacks — it only asks for the best the device has.
+const GPS_GOOD_M = 150;     // ≤ ~500 ft: trustworthy Wi-Fi/GPS fix → green
+const GPS_COARSE_M = 1609;  // ≤ 1 mi: usable but flag it; above this it's almost certainly IP-based
+
+// Format an accuracy radius (meters) in US units: feet under a mile, miles above.
+function fmtAccuracy(m) {
+  if (m == null || !isFinite(m)) return "±? ";
+  return m < 1609 ? `±${Math.round(m * 3.28084).toLocaleString()} ft`
+                  : `±${(m / 1609.34).toFixed(1)} mi`;
+}
+
 $("#useGps").addEventListener("click", () => {
   if (!navigator.geolocation) return setStatus("Geolocation not available.", "errc");
   setStatus("Getting location…");
   navigator.geolocation.getCurrentPosition(
-    p => { gpsStart = { lat: p.coords.latitude, lng: p.coords.longitude };
-           $("#subject").value = `📍 Current location (${gpsStart.lat.toFixed(4)}, ${gpsStart.lng.toFixed(4)})`;
-           setStatus("Using current location as start.", "ok"); },
+    p => {
+      gpsStart = { lat: p.coords.latitude, lng: p.coords.longitude };
+      const acc = p.coords.accuracy;                 // uncertainty radius in meters
+      const accStr = fmtAccuracy(acc);
+      $("#subject").value = `📍 Current location ${accStr} (${gpsStart.lat.toFixed(4)}, ${gpsStart.lng.toFixed(4)})`;
+      if (acc <= GPS_GOOD_M) {
+        setStatus(`Using current location as start (${accStr}).`, "ok");
+      } else if (acc <= GPS_COARSE_M) {
+        setStatus(`Using current location (${accStr}) — approximate, verify it's the right spot.`, "warnc");
+      } else {
+        setStatus(`⚠ Location is approximate (${accStr}) — likely an IP-based guess, not GPS. Type the subject address for accuracy.`, "errc");
+      }
+    },
     () => setStatus("Couldn't get location — type the subject address instead.", "errc"),
     { enableHighAccuracy: true, timeout: 10000 }
   );
