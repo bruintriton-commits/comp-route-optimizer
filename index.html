@@ -168,13 +168,16 @@ $("#useGps").addEventListener("click", () => {
     { enableHighAccuracy: true, timeout: 10000 }
   );
 });
-/* ---------------- Address autocomplete (Esri keyless "suggest") ---------------- */
+/* ---------------- Address + place autocomplete (Esri keyless "suggest") ---------------- */
 // Type-ahead on the subject + stops fields via the same provider the geocoder uses,
-// biased to the SoCal territory so local addresses rank first. Tap/click to fill.
+// biased to the SoCal territory so local results rank first. Tap/click to fill.
+// category=Address,POI so business/place names (e.g. "Stater Bros") surface as nearby
+// locations with their full street address embedded in the suggestion text — picking one
+// drops that address into the field, which then geocodes like any other address.
 const ESRI_SUGGEST = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/suggest";
 const SUGGEST_BIAS = "-117.3,33.9"; // lng,lat — Inland Empire-ish center
 async function fetchSuggest(q) {
-  const u = `${ESRI_SUGGEST}?f=json&maxSuggestions=6&category=Address&countryCode=USA&location=${SUGGEST_BIAS}&text=${encodeURIComponent(q)}`;
+  const u = `${ESRI_SUGGEST}?f=json&maxSuggestions=6&category=Address,POI&countryCode=USA&location=${SUGGEST_BIAS}&text=${encodeURIComponent(q)}`;
   try { const r = await fetch(u); const j = await r.json(); return (j.suggestions || []).map(s => s.text); }
   catch (_) { return []; }
 }
