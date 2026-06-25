@@ -2,3 +2,9 @@ ROUTE_OPTIMIZER_WORKFLOW.md
 route-optimizer.jsx
 SESSION_HANDOFF.md
 worker.js
+
+# Local test data — keep real MLS/comp exports out of the public repo
+*.csv
+*.tsv
+*.xlsx
+*.xls
