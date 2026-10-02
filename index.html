@@ -33,15 +33,6 @@
     width: 100%; background: #0e120f; color: var(--text); border: 1px solid var(--line);
     border-radius: 10px; padding: 12px; font-size: 16px; font-family: inherit; }
   textarea { min-height: 132px; resize: vertical; line-height: 1.5; }
-  .ac-wrap { position: relative; }
-  .ac-list { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30;
-    background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
-    display: none; box-shadow: 0 10px 28px rgba(0,0,0,.45); }
-  .ac-list.show { display: block; }
-  .ac-item { padding: 11px 12px; cursor: pointer; font-size: .92rem; line-height: 1.25;
-    border-top: 1px solid var(--line); }
-  .ac-item:first-child { border-top: 0; }
-  .ac-item.active, .ac-item:hover { background: #232d25; }
   .row { display: flex; gap: 8px; }
   .row > * { flex: 1; }
   button {
@@ -108,10 +99,7 @@
   <!-- STEP 1: start point -->
   <div class="card">
     <label>Subject property</label>
-    <div class="ac-wrap">
-      <input id="subject" type="text" placeholder="e.g. 27639 Paper Bark Ave, Murrieta, CA 92562" autocomplete="off" />
-      <div id="acList" class="ac-list"></div>
-    </div>
+    <input id="subject" type="text" placeholder="e.g. 27639 Paper Bark Ave, Murrieta, CA 92562" autocomplete="off" />
     <button class="ghost" id="useGps" style="margin-top:8px;">📍 Use my current location instead</button>
     <div class="seg" id="routeMode" role="radiogroup" aria-label="Subject's role in the route">
       <button type="button" class="seg-btn active" data-mode="start" role="radio" aria-checked="true"><span class="ico">📍</span>Start here</button>
@@ -157,10 +145,7 @@
   <!-- STEP 3: editable addresses -->
   <div class="card">
     <label>Stops — one address per line (edit to fix OCR misreads)</label>
-    <div class="ac-wrap">
-      <textarea id="stops" placeholder="Addresses appear here after OCR. You can also paste or type them."></textarea>
-      <div id="acStops" class="ac-list"></div>
-    </div>
+    <textarea id="stops" placeholder="Addresses appear here after OCR. You can also paste or type them."></textarea>
     <div class="hint">Tip: include city for best geocoding (e.g. &ldquo;25140 Wolf Rd, Murrieta&rdquo;). CA is assumed if no state given.</div>
   </div>
 
@@ -189,6 +174,218 @@
 <div id="dropOverlay">Drop CSV / Excel to import comps</div>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+/* Address anticipation (type-ahead) — reusable, no dependencies, works from file:// too.
+ * Canonical copy: Permit History Finder/web/autocomplete.js. Other apps carry copies
+ * (Zoning Finder, Zoning Specifications; inlined in Traffic Count Finder, Land Feature
+ * Lookup and Route Optimization) — change it here first, then re-copy.
+ *
+ *   attachAddressAutocomplete(inputEl, {
+ *     fetchSuggestions: async (text) => [{text, detail?, apn?}],   // default: addressSuggestions(...)
+ *     onPick: (item) => {...},       // default: fill the input
+ *     getQuery: () => string,        // default: the whole value; "" = don't suggest
+ *                                    //   (a textarea can return just the caret's line)
+ *     minChars: 3, debounceMs: 220,
+ *   });
+ *
+ *   addressSuggestions({extent, location, riversideCounty, pois})  -> fetchSuggestions function
+ *     1. Riverside County address points (once "<house#> <2+ letters>" is typed) — carry
+ *        the APN, so a pick resolves to exactly that parcel. Query MUST lead with the
+ *        numeric HOUSE_NUMBER: the layer 500s on string-only WHERE clauses.
+ *     2. Esri World "suggest" (keyless, CORS-open), limited to `extent`.
+ *   APN- or coordinate-shaped input never suggests.
+ *
+ * Keys: ↓/↑ move, Enter/Tab take, Esc close. Enter is handled in the CAPTURE phase on the
+ * wrapper, so a page's own Enter-to-search handler never fires on half-typed text while
+ * a suggestion is highlighted. Stale responses are dropped.
+ */
+"use strict";
+
+const AC_EXTENTS = {
+  riverside: "-117.68,33.42,-114.43,34.08",
+  socal: "-119.7,32.5,-114.1,35.85",
+  caAzNv: "-124.5,31.3,-109.0,42.0",
+  california: "-124.5,32.5,-114.1,42.0",
+};
+
+function addressSuggestions(opts = {}) {
+  const extent = opts.extent;                    // "xmin,ymin,xmax,ymax" or undefined = no limit
+  const location = opts.location || "-117.3,33.9";
+  const useCounty = opts.riversideCounty !== false;
+  const pois = !!opts.pois;                      // also suggest places/businesses ("Stater Bros, 123 Main St…")
+  const LIMIT = opts.limit || 8;
+  const cache = new Map();
+  const COUNTY = "https://gis.countyofriverside.us/arcgis_mapping/rest/services/OpenData/ADDRESS/MapServer/8/query";
+  const ESRI = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/suggest";
+  const title = (s) => s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  const dashed = (a) => (a && a.length === 9 ? `${a.slice(0, 3)}-${a.slice(3, 6)}-${a.slice(6)}` : a);
+  const DIRS = new Set(["N", "S", "E", "W"]);
+  const TYPES = new Set(["ST", "AVE", "RD", "DR", "LN", "CT", "PL", "BLVD", "CIR", "WAY", "TRL", "PKWY", "HWY", "TER"]);
+  const norm = (t) => {
+    const parts = t.toUpperCase().split(",").map((p) => p.trim());
+    const words = parts[0].split(/\s+/).filter((w) => !DIRS.has(w) && !TYPES.has(w));
+    return words.join(" ") + "|" + (parts[1] || "").replace(/\s*\d{5}.*$/, "").trim();
+  };
+
+  async function county(q) {
+    const m = q.match(/^(\d+)\s+([A-Z0-9][A-Z0-9 .'-]+?)(?:,\s*(.*))?$/);
+    if (!m || m[2].replace(/\s/g, "").length < 2) return [];
+    const [, house, street, cityIn] = m;
+    const where = `HOUSE_NUMBER=${parseInt(house, 10)} AND ADDRESS LIKE '${house} %${street.trim().replace(/'/g, "''")}%'`;
+    const u = `${COUNTY}?f=json&returnGeometry=false&outFields=APN,ADDRESS,CITY,ZIP&where=${encodeURIComponent(where)}`;
+    const j = await (await fetch(u)).json();
+    const groups = new Map();
+    for (const f of j.features || []) {
+      const a = f.attributes, addr = (a.ADDRESS || "").trim(), c = (a.CITY || "").trim();
+      if (!addr) continue;
+      if (cityIn && !c.startsWith(cityIn.trim().split(/\s+/)[0])) continue;
+      const k = addr + "|" + c;
+      if (!groups.has(k)) groups.set(k, { addr, c, zip: (a.ZIP || "").trim(), apns: new Set() });
+      if ((a.APN || "").trim()) groups.get(k).apns.add(a.APN.trim());
+    }
+    return [...groups.values()].sort((x, y) => (x.addr + x.c).localeCompare(y.addr + y.c)).slice(0, LIMIT).map((g) => {
+      const apns = [...g.apns].sort();
+      return {
+        text: `${title(g.addr)}, ${title(g.c)} ${g.zip}`.trim(),
+        detail: apns.length === 1 ? `APN ${dashed(apns[0])}` : apns.length ? `${apns.length} parcels (units/spaces)` : "",
+        apn: apns.length === 1 ? dashed(apns[0]) : null,
+        source: "county",
+      };
+    });
+  }
+
+  async function esri(q) {
+    const p = new URLSearchParams({ f: "json", text: q, maxSuggestions: LIMIT, category: pois ? "Address,POI" : "Address",
+                                    countryCode: "USA", location });
+    if (extent) p.set("searchExtent", extent);
+    const j = await (await fetch(`${ESRI}?${p}`)).json();
+    return (j.suggestions || [])
+      // Address mode: bare streets/cities can't resolve to a parcel. POI mode keeps places
+      // ("Stater Bros, 25140 …") — their text embeds the street address the caller geocodes.
+      .filter((s) => s.text && (pois || (!s.isCollection && /^\d/.test(s.text))))
+      .map((s) => ({
+        // '4000 Florence St, Hemet, CA, 92545, USA' -> '4000 Florence St, Hemet 92545'
+        // '200 W Washington St, Phoenix, AZ, 85003, USA' -> '200 W Washington St, Phoenix AZ 85003'
+        text: s.text.replace(/,\s*USA$/, "")
+          .replace(/,\s*([A-Z]{2})\b,?\s*(\d{5})?$/, (_, st, z) => (st === "CA" ? "" : " " + st) + (z ? " " + z : ""))
+          .trim(),
+        detail: "", apn: null, source: "esri",
+      }));
+  }
+
+  return async function fetchSuggestions(text) {
+    const q = text.toUpperCase().replace(/\s+/g, " ").trim();
+    // APNs, bare numbers and pasted coordinates never suggest.
+    if (q.length < 3 || /^[\d\-\s]+$/.test(q) || /^-?\d+\.\d+\s*,/.test(q)) return [];
+    if (cache.has(q)) return cache.get(q);
+    const [c, e] = await Promise.all([
+      useCounty ? county(q).catch(() => []) : [],
+      esri(q).catch(() => []),
+    ]);
+    const out = [...c], seen = new Set(c.map((s) => norm(s.text)));
+    for (const s of e) {
+      if (out.length >= LIMIT) break;
+      if (!seen.has(norm(s.text))) { out.push(s); seen.add(norm(s.text)); }
+    }
+    cache.set(q, out);
+    return out;
+  };
+}
+
+function attachAddressAutocomplete(input, opts = {}) {
+  if (!document.getElementById("ac-style")) {
+    const st = document.createElement("style");
+    st.id = "ac-style";
+    st.textContent = `
+.ac-wrap{position:relative;display:flex;flex:1 1 auto;min-width:0}
+.ac-wrap>input,.ac-wrap>textarea{flex:1 1 auto;min-width:0;width:100%}
+.ac-list{display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:10000;
+  background:var(--card,#fff);color:var(--ink,var(--text,#16181d));border:1px solid var(--line,#dfe3e9);border-radius:8px;
+  overflow:auto;max-height:340px;box-shadow:0 8px 24px rgba(0,0,0,.16);text-align:left;font-size:14px;line-height:1.35}
+.ac-list.show{display:block}
+.ac-item{display:flex;justify-content:space-between;gap:12px;padding:9px 13px;cursor:pointer;border-top:1px solid var(--line,#dfe3e9)}
+.ac-item:first-child{border-top:0}
+.ac-item.active,.ac-item:hover{background:var(--bg,#f1f3f6)}
+.ac-detail{color:var(--muted,#5d6470);font-size:12.5px;white-space:nowrap}
+@media (pointer:coarse){.ac-item{padding:12px 13px}}
+@media (prefers-color-scheme:dark){.ac-list{background:var(--card,#1c1f25);color:var(--ink,var(--text,#e8eaee));border-color:var(--line,#2c313a)}
+  .ac-item{border-top-color:var(--line,#2c313a)}.ac-item.active,.ac-item:hover{background:var(--bg,#14161a)}}`;
+    document.head.appendChild(st);
+  }
+  const fetchSuggestions = opts.fetchSuggestions || addressSuggestions(opts.provider || {});
+  const minChars = opts.minChars ?? 3;
+  const debounceMs = opts.debounceMs ?? 220;
+
+  const wrap = document.createElement("div");
+  wrap.className = "ac-wrap";
+  const cs = getComputedStyle(input);              // keep the input's sizing in flex headers
+  if (cs.minWidth && cs.minWidth !== "0px" && cs.minWidth !== "auto") wrap.style.minWidth = cs.minWidth;
+  if (cs.maxWidth && cs.maxWidth !== "none") wrap.style.maxWidth = cs.maxWidth;
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+  const list = document.createElement("div");
+  list.className = "ac-list";
+  list.setAttribute("role", "listbox");
+  wrap.appendChild(list);
+  input.setAttribute("autocomplete", "off");
+  input.setAttribute("aria-autocomplete", "list");
+
+  let items = [], active = -1, timer = null, seq = 0;
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const open = () => list.classList.contains("show");
+  const hide = () => { items = []; active = -1; list.classList.remove("show"); list.innerHTML = ""; };
+  const paint = () => [...list.children].forEach((c, i) => {
+    c.classList.toggle("active", i === active);
+    if (i === active) c.scrollIntoView({ block: "nearest" });
+  });
+  const pick = (item) => {
+    hide();
+    seq++;                                          // cancel any in-flight request
+    if (opts.onPick) opts.onPick(item); else input.value = item.text;
+  };
+
+  const getQuery = opts.getQuery || (() => input.value.trim());
+
+  input.addEventListener("input", () => {
+    const q = (getQuery() || "").trim();
+    clearTimeout(timer);
+    if (q.length < minChars) return hide();
+    const mine = ++seq;
+    timer = setTimeout(async () => {
+      let r = [];
+      try { r = await fetchSuggestions(q); } catch (_) { r = []; }
+      if (mine !== seq || document.activeElement !== input) return;   // stale, or user left the field
+      items = r || []; active = -1;
+      if (!items.length) return hide();
+      list.innerHTML = items.map((s, i) =>
+        `<div class="ac-item" role="option" data-i="${i}"><span class="ac-text">${esc(s.text)}</span>` +
+        (s.detail ? `<span class="ac-detail">${esc(s.detail)}</span>` : "") + `</div>`).join("");
+      list.classList.add("show");
+    }, debounceMs);
+  });
+
+  list.addEventListener("mousedown", (e) => {     // mousedown fires before the input's blur
+    const it = e.target.closest(".ac-item");
+    if (!it) return;
+    e.preventDefault();
+    pick(items[+it.dataset.i]);
+  });
+
+  wrap.addEventListener("keydown", (e) => {
+    if (e.target !== input) return;
+    if (e.key === "Enter" && !open()) { clearTimeout(timer); seq++; return; }  // typed Enter: page handles it; no late dropdown
+    if (!open()) return;
+    const consume = () => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
+    if (e.key === "ArrowDown") { consume(); active = Math.min(active + 1, items.length - 1); paint(); }
+    else if (e.key === "ArrowUp") { consume(); active = Math.max(active - 1, 0); paint(); }
+    else if ((e.key === "Enter" || e.key === "Tab") && active >= 0) { consume(); pick(items[active]); }
+    else if (e.key === "Escape") { consume(); hide(); }
+    else if (e.key === "Enter") { hide(); seq++; }   // plain Enter with nothing highlighted: submit as typed
+  }, true);                                          // capture: runs before the page's own handlers
+  input.addEventListener("blur", () => setTimeout(hide, 150));
+  return { hide };
+}
+</script>
 <script>
 const $ = s => document.querySelector(s);
 const OSRM = "https://router.project-osrm.org/trip/v1/driving/";
@@ -267,59 +464,19 @@ $("#routeMode").addEventListener("click", e => {
   $("#modeHint").textContent = ROUTE_HINTS[routeModeVal];
 });
 
-/* ---------------- Address + place autocomplete (Esri keyless "suggest") ---------------- */
-// Type-ahead on the subject + stops fields via the same provider the geocoder uses,
-// biased to the SoCal territory so local results rank first. Tap/click to fill.
-// category=Address,POI so business/place names (e.g. "Stater Bros") surface as nearby
-// locations with their full street address embedded in the suggestion text — picking one
-// drops that address into the field, which then geocodes like any other address.
-const ESRI_SUGGEST = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/suggest";
-const SUGGEST_BIAS = "-117.3,33.9"; // lng,lat — Inland Empire-ish center
-async function fetchSuggest(q) {
-  const u = `${ESRI_SUGGEST}?f=json&maxSuggestions=6&category=Address,POI&countryCode=USA&location=${SUGGEST_BIAS}&text=${encodeURIComponent(q)}`;
-  try { const r = await fetch(u); const j = await r.json(); return (j.suggestions || []).map(s => s.text); }
-  catch (_) { return []; }
-}
-// Wire type-ahead onto an input/textarea. getQuery() -> string to search ("" skips);
-// onPick(text) -> apply the chosen suggestion.
-function autocomplete(el, list, getQuery, onPick) {
-  let items = [], active = -1, timer = null;
-  const hide = () => { items = []; active = -1; list.classList.remove("show"); list.innerHTML = ""; };
-  const paint = () => [...list.children].forEach((c, i) => c.classList.toggle("active", i === active));
-  el.addEventListener("input", () => {
-    const q = getQuery();
-    clearTimeout(timer);
-    if (q.length < 4) return hide();
-    timer = setTimeout(async () => {
-      const r = await fetchSuggest(q);
-      if (getQuery() !== q) return;                  // ignore stale responses
-      items = r; active = -1;
-      if (!r.length) return hide();
-      list.innerHTML = r.map((t, i) => `<div class="ac-item" data-i="${i}">${escapeHtml(t)}</div>`).join("");
-      list.classList.add("show");
-    }, 250);
-  });
-  list.addEventListener("mousedown", e => {          // mousedown fires before the field's blur
-    const it = e.target.closest(".ac-item"); if (!it) return;
-    e.preventDefault(); onPick(items[+it.dataset.i]); hide();
-  });
-  el.addEventListener("keydown", e => {
-    if (!list.classList.contains("show")) return;
-    if (e.key === "ArrowDown") active = Math.min(active + 1, items.length - 1);
-    else if (e.key === "ArrowUp") active = Math.max(active - 1, 0);
-    else if (e.key === "Enter" && active >= 0) { onPick(items[active]); hide(); e.preventDefault(); return; }
-    else if (e.key === "Escape") return hide();
-    else return;
-    e.preventDefault(); paint();
-  });
-  el.addEventListener("blur", () => setTimeout(hide, 150));
-}
+/* ---------------- Address anticipation (shared component, see autocomplete block above) ---------------- */
+// Same type-ahead as the other Signum apps: Riverside County address points first (show the
+// APN), then Esri suggest. pois:true keeps business/place names ("Stater Bros") — their text
+// embeds the full street address, which then geocodes like any other address.
+const ROUTE_SUGGEST = { extent: AC_EXTENTS.california, pois: true };
 
 // Subject: search the whole value; a pick replaces it. (Skip while it holds a 📍 GPS pick.)
 $("#subject").addEventListener("input", () => { if (!$("#subject").value.startsWith("📍")) gpsStart = null; });
-autocomplete($("#subject"), $("#acList"),
-  () => $("#subject").value.startsWith("📍") ? "" : $("#subject").value.trim(),
-  text => { $("#subject").value = text; gpsStart = null; });
+attachAddressAutocomplete($("#subject"), {
+  provider: ROUTE_SUGGEST,
+  getQuery: () => $("#subject").value.startsWith("📍") ? "" : $("#subject").value.trim(),
+  onPick: (item) => { $("#subject").value = item.text; gpsStart = null; },
+});
 
 // Stops: one address per line — search/replace only the line the caret sits on.
 function stopsLine() {
@@ -328,14 +485,16 @@ function stopsLine() {
   let end = val.indexOf("\n", pos); if (end === -1) end = val.length;
   return { start, end, text: val.slice(start, end) };
 }
-autocomplete($("#stops"), $("#acStops"),
-  () => stopsLine().text.trim(),
-  text => {
+attachAddressAutocomplete($("#stops"), {
+  provider: ROUTE_SUGGEST,
+  getQuery: () => stopsLine().text.trim(),
+  onPick: (item) => {
     const ta = $("#stops"), { start, end } = stopsLine();
-    ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
-    const caret = start + text.length;
+    ta.value = ta.value.slice(0, start) + item.text + ta.value.slice(end);
+    const caret = start + item.text.length;
     ta.setSelectionRange(caret, caret); ta.focus();
-  });
+  },
+});
 
 /* ---------------- OCR ---------------- */
 // Upscale + grayscale + contrast-stretch so Tesseract sees larger, cleaner text.
